@@ -1,0 +1,1059 @@
+---
+title: "AMBITION_Metabolomics"
+author: "Christina Schmidt"
+date: "03 January 2022"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+editor_options:
+  chunk_output_type: console
+---
+
+# Establish the functions
+For this install the packages needed and load the libraries.
+```{r intro-chunk, message=FALSE}
+#load the needed libraries:
+library(tidyverse) # used for data manipulation
+library(rmarkdown) # used for paged_table function
+library(dplyr)
+```
+
+```{r normalisation, message=FALSE}
+Filtering <-function(Input){
+  #Find metabolites that have to be removed
+  miss <- c()
+  for(i in 1:ncol(Input)) {
+    if(length(which(is.na(Input[,i]))) > (0.8*nrow(Input)))
+    miss <- append(miss,i) 
+    }
+  #remove metabolites if any are found
+  if(length(miss) ==0){
+    print("There where no metabolites exluded")
+    filtered_matrix <- Input
+    } else {
+      print(length(miss))
+      print(" metabolites where removed")
+      filtered_matrix <- Input[,-miss]
+      }
+}
+
+MVI <-function(Input){
+  replace(Input, is.na(Input), ((min(Input, na.rm = TRUE))/2))
+}
+
+TIC <- function(Input){
+RowSums <- rowSums(Input)
+Median_RowSums <- median(RowSums)#This will built the median
+Data_TIC_Pre <- apply(Input, 2, function(i) i/RowSums)#This is dividing the ion intensity by the total ion count
+Data_TIC <- Data_TIC_Pre*Median_RowSums#Multiplies with the median metabolite intensity 
+Data_TIC <- cbind(rownames(Data_TIC), data.frame(Data_TIC, row.names=NULL, check.names=FALSE))%>%
+  rename("UniqueID"="rownames(Data_TIC)")
+}
+```
+
+```{r Heatmap, message=FALSE}
+library(gplots)
+Heatmap <- function(InputMatrix, maximum, minimum, OutputPlotName){
+  #Prepare the Input matrix and scale
+  dataHeat_matrix <- data.matrix(InputMatrix)
+  transpose<-t(scale(dataHeat_matrix))#scale by column
+  min(transpose)
+  max(transpose)
+  t <- as.vector(t(transpose))
+  #-------------------------------------------------------
+  #function to centralise the colour palette onto zero (Credit to Aurelien Dugourd)
+  createLinearColors <- function(numbers, withZero = T, maximum = 100)
+  {
+    if (min(numbers, na.rm = T) > 0)
+    {
+      if(withZero)
+      {
+        numbers <- c(0,numbers)
+      }
+      myPalette <- colorRampPalette(c("#F5B7B1",  "#EC7063", "#E74C3C", "#CB4335", "#A93226", "#922B21", "#7B241C", "#641E16"))
+      myColors <- myPalette(maximum)
+    }
+    else
+    {
+      if (max(numbers, na.rm = T) < 0)
+      {
+        if(withZero)
+        {
+          numbers <- c(0,numbers)
+        }
+        myPalette <- colorRampPalette(c("#154360","#1A5276","#1F618D","#2874A6","#2E86C1","#3498DB","#5DADE2","#85C1E9","#D6EAF8"))
+        myColors <- myPalette(maximum)
+      }
+      else
+      {
+        myPalette_pos <- colorRampPalette(c("#F5B7B1", "#EC7063","#E74C3C","#CB4335", "#A93226","#922B21","#7B241C","#641E16"))
+        myPalette_neg <- colorRampPalette(c("#154360","#1A5276","#1F618D","#2874A6","#2E86C1","#3498DB","#5DADE2","#85C1E9","#D6EAF8"))
+        
+        npos <- length(numbers[numbers >= 0]) + 1
+        nneg <- length(numbers[numbers <= 0]) + 1
+  
+        myColors_pos <- myPalette_pos(npos)
+        myColors_neg <- myPalette_neg(nneg)
+        
+        myColors <- c(myColors_neg[-(nneg)], myColors_pos[-1])
+      }
+    }
+    return(myColors)
+  }
+  #------------------------------------------
+  # Color palette normalization to zero
+  palette1 <- createLinearColors(t[t < 0],withZero = T , maximum = paste(maximum))
+  palette2 <- createLinearColors(t[t > 0],withZero = T , maximum = paste(minimum))
+  palette <- c(palette1,palette2)
+  #------------------------------------------
+  #Make the Heatmap
+  Heatmap <- heatmap.2(transpose, #the data frame we use
+          margins = c(7,14),#Figure Margins
+          col=palette,
+          scale="none", #data scaling
+          hclustfun=function(d) hclust(d, method="ward.D"), 
+          Rowv=T, 
+          Colv=T, 
+          symm=F,
+          symkey=F,
+          symbreaks=F,
+          density.info="none", 
+          trace="none",
+          main = paste(OutputPlotName),
+          key.title = "Metabolite Intensity",
+          key.xlab = NA,
+          cexRow=0.1, 
+          cexCol=0.1, 
+          ColSideColors=cols1)
+    }
+```
+
+```{r , message= FALSE}
+library(gtools)#used for "foldchange"
+DMA <-function(Log2FC_Condition1, Log2FC_Condition2,Stat_Condition1, Stat_Condition2, Patient_ID){
+  #Log2FC
+  FC_C1vC2 <- mapply(foldchange,Log2FC_Condition1,Log2FC_Condition2)
+  Log2FC_C1vC2 <- as.data.frame(foldchange2logratio(FC_C1vC2, base=2))
+  Log2FC_C1vC2 <- cbind(rownames(Log2FC_C1vC2), data.frame(Log2FC_C1vC2, row.names=NULL))
+  names(Log2FC_C1vC2)[names(Log2FC_C1vC2) == "rownames(Log2FC_C1vC2)"] <- "Metabolite"
+  names(Log2FC_C1vC2)[names(Log2FC_C1vC2) == "foldchange2logratio.FC_C1vC2..base...2."] <- paste("Log2FC",Patient_ID, sep="_")
+  #t-test
+  T_C1vC2 <-mapply(t.test, x= as.data.frame(Stat_Condition2), y = as.data.frame(Stat_Condition1), SIMPLIFY = F)
+  VecPVAL_C1vC2 <- c()
+  for(i in 1:length(T_C1vC2)){
+    p_value <- unlist(T_C1vC2[[i]][3])
+    VecPVAL_C1vC2[i] <- p_value
+  }
+  Metabolite <- colnames(Stat_Condition2)
+  PVal_C1vC2 <- data.frame(Metabolite, VecPVAL_C1vC2)
+  #Benjamini Hochberg p-adjusted
+  VecPADJ_C1vC2 <- p.adjust((PVal_C1vC2[,2]),method = "BH", n = length((PVal_C1vC2[,2])))
+  PADJ_C1vC2 <- data.frame(Metabolite, VecPADJ_C1vC2)
+  STAT_C1vC2 <- merge(PVal_C1vC2,PADJ_C1vC2, by="Metabolite")
+  STAT_C1vC2 <- merge(Log2FC_C1vC2,STAT_C1vC2, by="Metabolite")
+  names(STAT_C1vC2)[names(STAT_C1vC2) == "VecPVAL_C1vC2"] <- paste("p.val",Patient_ID, sep="_")
+  names(STAT_C1vC2)[names(STAT_C1vC2) == "VecPADJ_C1vC2"] <- paste("p.adj",Patient_ID, sep="_")
+  Output <- STAT_C1vC2
+}
+
+DMA_Single <-function(STAT_pval, STAT_padj, Log2FC_Condition1, Log2FC_Condition2,Stat_Condition1, Stat_Condition2, Output){
+  #Log2FC
+  FC_C1vC2 <- mapply(foldchange,Log2FC_Condition1,Log2FC_Condition2)
+  Log2FC_C1vC2 <- as.data.frame(foldchange2logratio(FC_C1vC2, base=2))
+  Log2FC_C1vC2 <- cbind(rownames(Log2FC_C1vC2), data.frame(Log2FC_C1vC2, row.names=NULL))
+  names(Log2FC_C1vC2)[names(Log2FC_C1vC2) == "rownames(Log2FC_C1vC2)"] <- "Metabolite"
+  names(Log2FC_C1vC2)[names(Log2FC_C1vC2) == "foldchange2logratio.FC_C1vC2..base...2."] <- "Log2FC"
+  #t-test
+  T_C1vC2 <-mapply(STAT_pval, x= as.data.frame(Stat_Condition2), y = as.data.frame(Stat_Condition1), SIMPLIFY = F)
+  VecPVAL_C1vC2 <- c()
+  for(i in 1:length(T_C1vC2)){
+    p_value <- unlist(T_C1vC2[[i]][3])
+    VecPVAL_C1vC2[i] <- p_value
+  }
+  Metabolite <- colnames(Stat_Condition2)
+  PVal_C1vC2 <- data.frame(Metabolite, VecPVAL_C1vC2)
+  #Benjamini Hochberg p-adjusted
+  VecPADJ_C1vC2 <- p.adjust((PVal_C1vC2[,2]),method = STAT_padj, n = length((PVal_C1vC2[,2])))
+  PADJ_C1vC2 <- data.frame(Metabolite, VecPADJ_C1vC2)
+  STAT_C1vC2 <- merge(PVal_C1vC2,PADJ_C1vC2, by="Metabolite")
+  STAT_C1vC2 <- merge(Log2FC_C1vC2,STAT_C1vC2, by="Metabolite")
+  names(STAT_C1vC2)[names(STAT_C1vC2) == "VecPVAL_C1vC2"] <- "p.val"
+  names(STAT_C1vC2)[names(STAT_C1vC2) == "VecPADJ_C1vC2"] <- "p.adj"
+  #write.csv(STAT_C1vC2, paste("",Output), row.names= TRUE)
+  Output <- STAT_C1vC2
+}
+```
+
+```{r PCA, message=FALSE}
+library(devtools)
+library(ggfortify)
+library(ggplot2)
+library(RColorBrewer)
+library(viridisLite)
+library(viridis)#https://cran.r-project.org/web/packages/viridis/vignettes/intro-to-viridis.html
+
+PCA_NoLoadings <- function(InputMatrix,OutputPlotName, DF, Color, Shape){
+  PCA <- autoplot (prcomp(InputMatrix),
+         data = DF,
+         colour = Color,
+         label=T,
+         label.size=1,
+         label.repel = TRUE,
+         #loadings=T, #draws Eigenvectors
+         #loadings.label = TRUE,
+         #loadings.label.vjust = 1.2,
+         #loadings.label.size=2,
+         #loadings.colour="grey10",
+         #loadings.label.colour="grey10",
+         fill = Color,#fill colour of the dots
+         color = "black",#outline colour
+         alpha = 0.8,#controls the transparency: 1 = 100% opaque; 0 = 100% transparent.
+         shape = Shape,#https://rpkgs.datanovia.com/ggpubr/reference/show_point_shapes.html, 21
+         size = 3.5#size of the dot
+         )+
+    labs(col=Color, size=1)+
+    scale_shape_manual(values=c(22,24,21,23,25,7,8,11,12))+ #needed if more than 6 shapes are in place
+    theme_classic()+
+    geom_hline(yintercept=0, linetype="dashed", color = "black", alpha=0.6, size=0.75)+
+    geom_vline(xintercept = 0, linetype="dashed", color = "black", alpha=0.6, size=0.75)+
+    ggtitle(paste(OutputPlotName))
+  ggsave(file=paste("Figures_AMBITION-Metabolomics/PCA_Color", OutputPlotName, ".pdf", sep="_"), plot=PCA, width=8, height=6)
+  plot(PCA)
+}
+```
+
+```{r VolcanoPlot_Pathways, message=FALSE}
+library(ggrepel)
+library(EnhancedVolcano)
+
+VolcanoPlot_Pathways <- function(InputData, OutputPlotName){
+#Prepare new colour scheme:
+  keyvals <- ifelse(
+    InputData$Metabolic_Pathways == "glycolysis and PPP", "red",
+    ifelse(InputData$Metabolic_Pathways == "amino acid and conjugate", "blue",
+    ifelse(InputData$Metabolic_Pathways == "redox homeostasis", "orange",
+    ifelse(InputData$Metabolic_Pathways == "nucleotides", "seagreen",
+    ifelse(InputData$Metabolic_Pathways == "Carnitine metabolism", "gold4",
+    ifelse(InputData$Metabolic_Pathways == "TCA cycle", "firebrick4",
+          "gray"))))))
+  keyvals[is.na(keyvals)] <- 'gray'
+  names(keyvals)[keyvals == 'blue'] <- "Amino acid and Conjugates"
+  names(keyvals)[keyvals == 'red'] <- "Glycolysis and PPP"
+  names(keyvals)[keyvals == 'gold4'] <- "Carnitine metabolism"
+  names(keyvals)[keyvals == 'seagreen'] <- "Nucleotides"
+  #names(keyvals)[keyvals == 'darkorchid1'] <- "Purine metabolism"
+  #names(keyvals)[keyvals == 'darkorchid4'] <- "Pyrimidine metabolism"
+  names(keyvals)[keyvals == 'orange'] <- "Redox homeostasis"
+  #names(keyvals)[keyvals == 'gold1'] <- "Fatty acid metabolism"
+  names(keyvals)[keyvals == 'firebrick4'] <- "TCA cycle"
+  names(keyvals)[keyvals == 'gray'] <- 'Not assigned to pathway'
+#Make the VolcanoPlot
+VolcanoPlot0<- EnhancedVolcano (InputData,
+                lab = InputData$Metabolite,#Metabolite name
+                #lab =NA,#No labels on the plot
+                x = "Log2FC",#Log2FC
+                y = "p.adj",#p-value or q-value
+                xlab = bquote(~Log[2]~ "FC"),
+                ylab = bquote(~-Log[10]~p.adj),#(~-Log[10]~adjusted~italic(P))
+                pCutoff = 0.05,
+                FCcutoff = 0.5,#Cut off Log2FC, automatically 2
+                pointSize = 4,
+                labSize = 0.5,
+                titleLabSize = 16,
+                colCustom = keyvals,
+                colAlpha = 0.5,
+                title= paste(OutputPlotName),
+                subtitle = bquote(italic("Differential metabolomics analysis")),
+                caption = paste0("total = ", nrow(InputData), " Metabolites"),
+                #xlim = c((ceiling(Reduce(min,InputData$Log2FC))-0.2),(ceiling(Reduce(max,InputData$Log2FC))+0.2)),
+                xlim=c(-5.5, 1.5),
+                ylim = c(0,(ceiling(-log10(Reduce(min,InputData$p.adj))))),
+                #drawConnectors = TRUE,
+                #widthConnectors = 0.5,
+                #colConnectors = "black",
+                #arrowheads=FALSE,
+                cutoffLineType = "dashed",
+                cutoffLineCol = "black",
+                cutoffLineWidth = 0.5,
+                #legendLabels=c('No changes',"-0.5< Log2FC <0.5","-0.5< Log2FC <0.5", 'p.adj<0.05 & -0.5< Log2FC <0.5"'),
+                legendPosition = 'right',
+                legendLabSize = 8,
+                legendIconSize =4,
+                gridlines.major = FALSE,
+                gridlines.minor = FALSE,
+                )
+ggsave(file=paste("Figures_AMBITION-Metabolomics/VolcanoPlot_padj", OutputPlotName, "Pathway_Select.pdf", sep="_"), plot=VolcanoPlot0, width=8, height=6)
+  #ggsave(file=paste("VolcanoPlot_padj", OutputPlotName, "Pathway_Select.png", sep="_"), plot=VolcanoPlot0, width=10, height=8)
+  plot(VolcanoPlot0)
+
+VolcanoPlot1<- EnhancedVolcano (InputData,
+                lab = InputData$Metabolite,#Metabolite name
+                #lab =NA,#No labels on the plot
+                x = "Log2FC",#Log2FC
+                y = "p.val",#p-value or q-value
+                xlab = bquote(~Log[2]~ "FC"),
+                ylab = bquote(~-Log[10]~p.val),#(~-Log[10]~adjusted~italic(P))
+                pCutoff = 0.05,
+                FCcutoff = 0.5,#Cut off Log2FC, automatically 2
+                pointSize = 4,
+                labSize = 0.5,
+                titleLabSize = 16,
+                colCustom = keyvals,
+                colAlpha = 0.5,
+                title=paste(OutputPlotName),
+                subtitle = bquote(italic("Differential metabolomics analysis")),
+                caption = paste0("total = ", nrow(InputData), " Metabolites"),
+                #xlim = c((ceiling(Reduce(min,InputData$Log2FC))),(ceiling(Reduce(max,InputData$Log2FC)))),
+                xlim=c(-5.5, 1.5),
+                ylim = c(0,(ceiling(-log10(Reduce(min,InputData$p.val))))),
+                #drawConnectors = TRUE,
+                #widthConnectors = 0.5,
+                #colConnectors = "black",
+                #arrowheads=FALSE,
+                cutoffLineType = "dashed",
+                cutoffLineCol = "black",
+                cutoffLineWidth = 0.5,
+                #legendLabels=c('No changes',"-0.5< Log2FC <0.5","-0.5< Log2FC <0.5", 'p.adj<0.05 & -0.5< Log2FC <0.5"'),
+                legendPosition = 'right',
+                legendLabSize = 8,
+                legendIconSize =4,
+                gridlines.major = FALSE,
+                gridlines.minor = FALSE,
+                )
+ggsave(file=paste("Figures_AMBITION-Metabolomics/VolcanoPlot_pval", OutputPlotName, "Pathway_Select.pdf", sep="_"), plot=VolcanoPlot1, width=8, height=6)
+  #ggsave(file=paste("VolcanoPlot_pval", OutputPlotName, "Pathway_Select.png", sep="_"), plot=VolcanoPlot1, width=10, height=8)
+  plot(VolcanoPlot1)
+}
+```
+
+# Information
+`The AMBITION study`\
+`A`ssessing `M`itochondrial `BI`oenergetics in chronic coronary artery disease: A `T`ranslational study `I`ntegrating multi`Om`ic analysis of human left ventricular tissue and qua`N`titative stress perfusion cardiovascular magnetic resonance\
+\
+The notebook contains: Metabolomics data of patients myocardial biopsies that were analysed by liquid chromatography-mass spectrometry (LC-MS).LC-MS data aquistion has been performed by the Frezza Laboratory, CECAD Research Center, Faculty of Medicine, University Hospital Cologne, Germany. Input data will be available upon publication in the folder "InputData_AMBITION-Metabolomics".\
+\
+Code for the R analysis can be reproduced by following this notebook. This includes the data normalisation, differential metabolite analysis and all subsequent plots (PCA plot, Correlation plot, Volcano plot).
+
+# Preparation of the Supplementary Data Tables
+## Sheet 1: Raw Data
+
+```{r, message=FALSE, warning=FALSE}
+#Load the data:
+TP_Intra <- read.csv("InputData_AMBITION-Metabolomics/AMBITION_RawData.csv", check.names=FALSE)%>%
+  unite("UniqueID",c("Patient.ID","class", "analytical_replicate"),sep="_", remove=FALSE)
+```
+
+## Sheet 2: Normalised Data
+Total pools of the intracellular metabolites are used.\
+\
+```{r, message=FALSE, warning=FALSE}
+#Prepare the input matrix
+x <- TP_Intra[,6:250]
+x_matrix <- apply(as.matrix(x), 2, as.numeric)
+row.names(x_matrix) <- TP_Intra$UniqueID
+x_matrix <- replace(x_matrix, x_matrix %in% 0, NA)#Replace 0 with NA
+```
+
+### Normalisation
+Step1: Filtering 80% Rule\
+Metabolites which where detected with "NA" in more than 80% of the samples are excluded:Here None\
+\
+Step2: Missing Value Imputation (MVI)
+   - We will search for the smallest detected value (x)\
+   - We will divide this value by 2 (x:2)\
+   - We will replace all "NA" with the value (x:2)\
+\
+Step3: Normalisation\
+Normalization to total ion count (TIC)
+```{r, message=FALSE, warning=FALSE}
+filt <- Filtering(Input=x_matrix)
+MVI <-MVI(filt)
+TIC <- TIC(MVI)
+
+#Merge with SampleInfo
+norm <-  merge(TP_Intra[,1:5], TIC, by="UniqueID", check.names=FALSE)
+```
+
+### Quality control: Mark Outliers
+Here we perform ["muma"](https://cran.r-project.org/web/packages/muma/muma.pdf) (Metabolomics Univariate and Multivariate Analysis) analysis for outliers. This uses the Hotellin's T2 distribution test to estimate outliers (Here: Pareto scaling used)\
+```{r, warning=FALSE, error=FALSE, eval=FALSE}
+#Prepare DF:
+Muma_Intra <- norm
+Muma_Intra <- Muma_Intra[,c(1,5,6:250)]
+names(Muma_Intra)[names(Muma_Intra) == "UniqueID"] <- "sample"#Rename the rowname
+names(Muma_Intra)[names(Muma_Intra) == "analytical_replicate"] <- "class"#Rename the rowname
+write.csv(Muma_Intra, "Muma/Muma_Intra_Tissue.csv", row.names=FALSE)
+
+#Muma analysis
+library(muma)
+#Create "PCA_ScoreMatrix.csv
+
+explore.data("Muma/Muma_Intra_Tissue.csv",#Data need to be imported as a .csv
+             "Pareto",#scaling is performed
+             normalize=FALSE,
+             imputation = FALSE)
+#Test for Outlier based on geometric distances of each point in the PCA score plot
+Plot.pca(1,#an integer indicating the principal component to be plotted in x
+         2,#an integer indicating the principal component to be plotted in y
+         "Pareto",#scaling previously specified in the function ’explore.data’
+         test.outlier=TRUE)#geometric outlier testing
+
+#Safe ScorePlot_PC1vsPC2.pdf as .png to include in html!
+```
+\
+We do have outliers in the samples:\
+![](Muma/ScorePlot_PC1vsPC2.png)
+
+\
+The outliers are:\
+\
+--> Definite outliers:\
+1. Patient_040: All analytical replicates of the remote samples\
+2. Patient_048: All analytical replicates of the remote samples\
+These samples where already flanked to have very low total ion count (TIC) due to the amount of material. Therefore, we exclude these samples from the downstream analysis.\
+\
+--> Debatable outliers (close to boarder):\
+1. Patient_075: All analytical replicates of the ischmia samples\
+2. Patient_054: All analytical replicates of the ischmia samples\
+Since these are close to the boarder, we check the metabolite distribution in the Heatmap to decide if we have to exclude them.\
+```{r, warning= FALSE, message=FALSE}
+#Prepare InputData:
+dataHeat <- norm
+row.names(dataHeat) <- dataHeat$UniqueID
+Input_dataHeat <- dataHeat[,6:250]
+
+#Prepare sample color code:
+cols1 <- case_when(dataHeat$class == "Remote"  ~ 'blue',
+                   dataHeat$class == "Ischaemic"  ~ 'red',
+                   TRUE ~ 'grey')
+  
+#Make the Heatmap:
+Heatmap2 <- Heatmap(InputMatrix=Input_dataHeat, maximum=25, minimum=75, OutputPlotName="Normalised Total Pool data")
+```
+\
+I can not really spot a clear outlier in the Heatmap and hence I would not remove any other replicates from the data.
+
+```{r, warning= FALSE, message=FALSE}
+norm_outliers <- norm%>%
+  mutate(Excluded = case_when(UniqueID == "Patient_040_Remote_1" ~ 'YES',
+                              UniqueID == "Patient_040_Remote_2" ~ 'YES',
+                              UniqueID == "Patient_040_Remote_3" ~ 'YES',
+                              UniqueID == "Patient_048_Remote_1" ~ 'YES',
+                              UniqueID == "Patient_048_Remote_2" ~ 'YES',
+                              UniqueID == "Patient_048_Remote_3" ~ 'YES',
+                                   TRUE ~ 'NO'))
+
+norm_outliers <-norm_outliers[,c(1,251,2:251)]
+write.csv(norm_outliers, "OutputData_AMBITION-Metabolomics/Sheet2_MVI-TIC-normalised_OutliersMarked.csv", row.names=FALSE)
+```
+
+## Sheet 3: Mean of analytical replicates
+Each sample was measured three times (three independent injections). Here I will built the mean of these analytical replicates after removing the outliers.\
+These results will be used for plotting individual metabolites of interest and to perform the differential metabolite analysis of impaired LVEF versus preserved LVEF.\
+\
+*Note: For Patient_050 two different samples were harvested and each injected three times, yet they are treated as six analytical replicates and hence combined.
+```{r, warning= FALSE, message=FALSE}
+#Remove Outliers:
+norm_NoOutliers <- subset(norm_outliers,Excluded == "NO")%>%
+   unite(Sample,c("Patient.ID","class"),sep="_", remove=FALSE)
+norm_NoOutliers <-norm_NoOutliers[,-c(2,253)]
+
+#Built Means
+H_Means <- (norm_NoOutliers[,7:251]) %>%
+  group_by(norm_NoOutliers$Sample) %>%
+  summarise_all(funs(mean))
+
+H_Means <- merge(x=norm_NoOutliers[,c(2:5)], y=H_Means, by.x ="Sample",by.y ="norm_NoOutliers$Sample")
+H_Means <- H_Means[!duplicated(H_Means$Sample),]
+
+write.csv(H_Means, "OutputData_AMBITION-Metabolomics/Sheet3_MVI-TIC-normalised_Means.csv")
+```
+
+## Sheet 4: DMA ischemia versus remote 
+He we perform differential metabolite analysis for each patient with ischemia and remote sample (total 29):\
+Ischemia versus Remote using the analytical replicates for the statistics. Here we performed the t-Test and p-value adjustment using Benjamini Hochberg.\
+\
+*Note: For Patient_050 two different samples were harvested and each injected three times, yet they are treated as six analytical replicates and hence combined.
+```{r , warning= FALSE, message=FALSE}
+# Prepare the Dataframes:
+Data_DMA <- subset(norm_outliers,Excluded == "NO")%>%#remove the outliers!
+  unite("Sample",c("Patient.ID","class"),sep="_", remove=FALSE)
+Data_DMA <-Data_DMA[,-253]
+
+#--------------------
+##Single replicates for STAT:
+Stat_120_Ischaemic <- subset(Data_DMA, Sample == "Patient_120_Ischaemic", select=c(10:252))
+Stat_120_Remote <- subset(Data_DMA, Sample == "Patient_120_Remote", select=c(10:252))
+Stat_089_Ischaemic <- subset(Data_DMA, Sample == "Patient_089_Ischaemic", select=c(10:252))
+Stat_089_Remote <- subset(Data_DMA, Sample == "Patient_089_Remote", select=c(10:252))
+Stat_094_Ischaemic <- subset(Data_DMA, Sample == "Patient_094_Ischaemic", select=c(10:252))
+Stat_094_Remote <- subset(Data_DMA, Sample == "Patient_094_Remote", select=c(10:252))
+Stat_080_Ischaemic <- subset(Data_DMA, Sample == "Patient_080_Ischaemic", select=c(10:252))
+Stat_080_Remote <- subset(Data_DMA, Sample == "Patient_080_Remote", select=c(10:252))
+Stat_088_Ischaemic <- subset(Data_DMA, Sample == "Patient_088_Ischaemic", select=c(10:252))
+Stat_088_Remote <- subset(Data_DMA, Sample == "Patient_088_Remote", select=c(10:252))
+Stat_054_Ischaemic <- subset(Data_DMA, Sample == "Patient_054_Ischaemic", select=c(10:252))
+Stat_054_Remote <- subset(Data_DMA, Sample == "Patient_054_Remote", select=c(10:252))
+Stat_093_Ischaemic <- subset(Data_DMA, Sample == "Patient_093_Ischaemic", select=c(10:252))
+Stat_093_Remote <- subset(Data_DMA, Sample == "Patient_093_Remote", select=c(10:252))
+Stat_039_Ischaemic <- subset(Data_DMA, Sample == "Patient_039_Ischaemic", select=c(10:252))
+Stat_039_Remote <- subset(Data_DMA, Sample == "Patient_039_Remote", select=c(10:252))
+Stat_064_Ischaemic <- subset(Data_DMA, Sample == "Patient_064_Ischaemic", select=c(10:252))
+Stat_064_Remote <- subset(Data_DMA, Sample == "Patient_064_Remote", select=c(10:252))
+Stat_101_Ischaemic <- subset(Data_DMA, Sample == "Patient_101_Ischaemic", select=c(10:252))
+Stat_101_Remote <- subset(Data_DMA, Sample == "Patient_101_Remote", select=c(10:252))
+Stat_103_Ischaemic <- subset(Data_DMA, Sample == "Patient_103_Ischaemic", select=c(10:252))
+Stat_103_Remote <- subset(Data_DMA, Sample == "Patient_103_Remote", select=c(10:252))
+Stat_075_Ischaemic <- subset(Data_DMA, Sample == "Patient_075_Ischaemic", select=c(10:252))
+Stat_075_Remote <- subset(Data_DMA, Sample == "Patient_075_Remote", select=c(10:252))
+Stat_099_Ischaemic <- subset(Data_DMA, Sample == "Patient_099_Ischaemic", select=c(10:252))
+Stat_099_Remote <- subset(Data_DMA, Sample == "Patient_099_Remote", select=c(10:252))
+Stat_071_Ischaemic <- subset(Data_DMA, Sample == "Patient_071_Ischaemic", select=c(10:252))
+Stat_071_Remote <- subset(Data_DMA, Sample == "Patient_071_Remote", select=c(10:252))
+Stat_073_Ischaemic <- subset(Data_DMA, Sample == "Patient_073_Ischaemic", select=c(10:252))
+Stat_073_Remote <- subset(Data_DMA, Sample == "Patient_073_Remote", select=c(10:252))
+Stat_050_Ischaemic <- subset(Data_DMA, Sample == "Patient_050_Ischaemic", select=c(10:252))
+Stat_050_Remote <- subset(Data_DMA, Sample == "Patient_050_Remote", select=c(10:252))
+Stat_090_Ischaemic <- subset(Data_DMA, Sample == "Patient_090_Ischaemic", select=c(10:252))
+Stat_090_Remote <- subset(Data_DMA, Sample == "Patient_090_Remote", select=c(10:252))
+Stat_065_Ischaemic <- subset(Data_DMA, Sample == "Patient_065_Ischaemic", select=c(10:252))
+Stat_065_Remote <- subset(Data_DMA, Sample == "Patient_065_Remote", select=c(10:252))
+Stat_085_Ischaemic <- subset(Data_DMA, Sample == "Patient_085_Ischaemic", select=c(10:252))
+Stat_085_Remote <- subset(Data_DMA, Sample == "Patient_085_Remote", select=c(10:252))
+Stat_055_Ischaemic <- subset(Data_DMA, Sample == "Patient_055_Ischaemic", select=c(10:252))
+Stat_055_Remote <- subset(Data_DMA, Sample == "Patient_055_Remote", select=c(10:252))
+Stat_038_Ischaemic <- subset(Data_DMA, Sample == "Patient_038_Ischaemic", select=c(10:252))
+Stat_038_Remote <- subset(Data_DMA, Sample == "Patient_038_Remote", select=c(10:252))
+Stat_076_Ischaemic <- subset(Data_DMA, Sample == "Patient_076_Ischaemic", select=c(10:252))
+Stat_076_Remote <- subset(Data_DMA, Sample == "Patient_076_Remote", select=c(10:252))
+Stat_045_Ischaemic <- subset(Data_DMA, Sample == "Patient_045_Ischaemic", select=c(10:252))
+Stat_045_Remote <- subset(Data_DMA, Sample == "Patient_045_Remote", select=c(10:252))
+Stat_083_Ischaemic <- subset(Data_DMA, Sample == "Patient_083_Ischaemic", select=c(10:252))
+Stat_083_Remote <- subset(Data_DMA, Sample == "Patient_083_Remote", select=c(10:252))
+Stat_100_Ischaemic <- subset(Data_DMA, Sample == "Patient_100_Ischaemic", select=c(10:252))
+Stat_100_Remote <- subset(Data_DMA, Sample == "Patient_100_Remote", select=c(10:252))
+Stat_068_Ischaemic <- subset(Data_DMA, Sample == "Patient_068_Ischaemic", select=c(10:252))
+Stat_068_Remote <- subset(Data_DMA, Sample == "Patient_068_Remote", select=c(10:252))
+Stat_091_Ischaemic <- subset(Data_DMA, Sample == "Patient_091_Ischaemic", select=c(10:252))
+Stat_091_Remote <- subset(Data_DMA, Sample == "Patient_091_Remote", select=c(10:252))
+Stat_102_Ischaemic <- subset(Data_DMA, Sample == "Patient_102_Ischaemic", select=c(10:252))
+Stat_102_Remote <- subset(Data_DMA, Sample == "Patient_102_Remote", select=c(10:252))
+Stat_043_Ischaemic <- subset(Data_DMA, Sample == "Patient_043_Ischaemic", select=c(10:252))
+Stat_043_Remote <- subset(Data_DMA, Sample == "Patient_043_Remote", select=c(10:252))
+
+#---------------------
+## Mean of the replicates:
+Data_DMA_Means <- (Data_DMA[,10:252]) %>%
+  group_by(Data_DMA$Sample) %>%
+  summarise_all(funs(mean))%>%
+  rename("Sample"="Data_DMA$Sample")
+
+Mean_120_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_120_Ischaemic", select=c(2:244))
+Mean_120_Remote <- subset(Data_DMA_Means, Sample == "Patient_120_Remote", select=c(2:244))
+Mean_089_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_089_Ischaemic", select=c(2:244))
+Mean_089_Remote <- subset(Data_DMA_Means, Sample == "Patient_089_Remote", select=c(2:244))
+Mean_094_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_094_Ischaemic", select=c(2:244))
+Mean_094_Remote <- subset(Data_DMA_Means, Sample == "Patient_094_Remote", select=c(2:244))
+Mean_080_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_080_Ischaemic", select=c(2:244))
+Mean_080_Remote <- subset(Data_DMA_Means, Sample == "Patient_080_Remote", select=c(2:244))
+Mean_088_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_088_Ischaemic", select=c(2:244))
+Mean_088_Remote <- subset(Data_DMA_Means, Sample == "Patient_088_Remote", select=c(2:244))
+Mean_054_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_054_Ischaemic", select=c(2:244))
+Mean_054_Remote <- subset(Data_DMA_Means, Sample == "Patient_054_Remote", select=c(2:244))
+Mean_093_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_093_Ischaemic", select=c(2:244))
+Mean_093_Remote <- subset(Data_DMA_Means, Sample == "Patient_093_Remote", select=c(2:244))
+Mean_039_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_039_Ischaemic", select=c(2:244))
+Mean_039_Remote <- subset(Data_DMA_Means, Sample == "Patient_039_Remote", select=c(2:244))
+Mean_064_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_064_Ischaemic", select=c(2:244))
+Mean_064_Remote <- subset(Data_DMA_Means, Sample == "Patient_064_Remote", select=c(2:244))
+Mean_101_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_101_Ischaemic", select=c(2:244))
+Mean_101_Remote <- subset(Data_DMA_Means, Sample == "Patient_101_Remote", select=c(2:244))
+Mean_103_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_103_Ischaemic", select=c(2:244))
+Mean_103_Remote <- subset(Data_DMA_Means, Sample == "Patient_103_Remote", select=c(2:244))
+Mean_075_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_075_Ischaemic", select=c(2:244))
+Mean_075_Remote <- subset(Data_DMA_Means, Sample == "Patient_075_Remote", select=c(2:244))
+Mean_099_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_099_Ischaemic", select=c(2:244))
+Mean_099_Remote <- subset(Data_DMA_Means, Sample == "Patient_099_Remote", select=c(2:244))
+Mean_071_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_071_Ischaemic", select=c(2:244))
+Mean_071_Remote <- subset(Data_DMA_Means, Sample == "Patient_071_Remote", select=c(2:244))
+Mean_073_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_073_Ischaemic", select=c(2:244))
+Mean_073_Remote <- subset(Data_DMA_Means, Sample == "Patient_073_Remote", select=c(2:244))
+Mean_050_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_050_Ischaemic", select=c(2:244))
+Mean_050_Remote <- subset(Data_DMA_Means, Sample == "Patient_050_Remote", select=c(2:244))
+Mean_090_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_090_Ischaemic", select=c(2:244))
+Mean_090_Remote <- subset(Data_DMA_Means, Sample == "Patient_090_Remote", select=c(2:244))
+Mean_065_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_065_Ischaemic", select=c(2:244))
+Mean_065_Remote <- subset(Data_DMA_Means, Sample == "Patient_065_Remote", select=c(2:244))
+Mean_085_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_085_Ischaemic", select=c(2:244))
+Mean_085_Remote <- subset(Data_DMA_Means, Sample == "Patient_085_Remote", select=c(2:244))
+Mean_055_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_055_Ischaemic", select=c(2:244))
+Mean_055_Remote <- subset(Data_DMA_Means, Sample == "Patient_055_Remote", select=c(2:244))
+Mean_038_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_038_Ischaemic", select=c(2:244))
+Mean_038_Remote <- subset(Data_DMA_Means, Sample == "Patient_038_Remote", select=c(2:244))
+Mean_076_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_076_Ischaemic", select=c(2:244))
+Mean_076_Remote <- subset(Data_DMA_Means, Sample == "Patient_076_Remote", select=c(2:244))
+Mean_045_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_045_Ischaemic", select=c(2:244))
+Mean_045_Remote <- subset(Data_DMA_Means, Sample == "Patient_045_Remote", select=c(2:244))
+Mean_083_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_083_Ischaemic", select=c(2:244))
+Mean_083_Remote <- subset(Data_DMA_Means, Sample == "Patient_083_Remote", select=c(2:244))
+Mean_100_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_100_Ischaemic", select=c(2:244))
+Mean_100_Remote <- subset(Data_DMA_Means, Sample == "Patient_100_Remote", select=c(2:244))
+Mean_068_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_068_Ischaemic", select=c(2:244))
+Mean_068_Remote <- subset(Data_DMA_Means, Sample == "Patient_068_Remote", select=c(2:244))
+Mean_091_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_091_Ischaemic", select=c(2:244))
+Mean_091_Remote <- subset(Data_DMA_Means, Sample == "Patient_091_Remote", select=c(2:244))
+Mean_102_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_102_Ischaemic", select=c(2:244))
+Mean_102_Remote <- subset(Data_DMA_Means, Sample == "Patient_102_Remote", select=c(2:244))
+Mean_043_Ischaemic <- subset(Data_DMA_Means, Sample == "Patient_043_Ischaemic", select=c(2:244))
+Mean_043_Remote <- subset(Data_DMA_Means, Sample == "Patient_043_Remote", select=c(2:244))
+
+#---------------------
+## Apply function:
+
+DMA_ISCHEMIAvREMOTE_120 <- DMA(Log2FC_Condition1=Mean_120_Ischaemic, 
+                                     Log2FC_Condition2=Mean_120_Remote, 
+                                     Stat_Condition1=Stat_120_Ischaemic, 
+                                     Stat_Condition2=Stat_120_Remote,
+                                     Patient_ID="Patient_120")
+
+DMA_ISCHEMIAvREMOTE_089 <- DMA(Log2FC_Condition1=Mean_089_Ischaemic, 
+                                     Log2FC_Condition2=Mean_089_Remote, 
+                                     Stat_Condition1=Stat_089_Ischaemic, 
+                                     Stat_Condition2=Stat_089_Remote,
+                                     Patient_ID="Patient_089")
+
+DMA_ISCHEMIAvREMOTE_094 <- DMA(Log2FC_Condition1=Mean_094_Ischaemic, 
+                                     Log2FC_Condition2=Mean_094_Remote, 
+                                     Stat_Condition1=Stat_094_Ischaemic, 
+                                     Stat_Condition2=Stat_094_Remote,
+                                     Patient_ID="Patient_094")
+
+DMA_ISCHEMIAvREMOTE_080 <- DMA(Log2FC_Condition1=Mean_080_Ischaemic, 
+                                     Log2FC_Condition2=Mean_080_Remote, 
+                                     Stat_Condition1=Stat_080_Ischaemic, 
+                                     Stat_Condition2=Stat_080_Remote,
+                                     Patient_ID="Patient_080")
+
+DMA_ISCHEMIAvREMOTE_088 <- DMA(Log2FC_Condition1=Mean_088_Ischaemic, 
+                                     Log2FC_Condition2=Mean_088_Remote, 
+                                     Stat_Condition1=Stat_088_Ischaemic, 
+                                     Stat_Condition2=Stat_088_Remote,
+                                     Patient_ID="Patient_088")
+
+DMA_ISCHEMIAvREMOTE_054 <- DMA(Log2FC_Condition1=Mean_054_Ischaemic, 
+                                     Log2FC_Condition2=Mean_054_Remote, 
+                                     Stat_Condition1=Stat_054_Ischaemic, 
+                                     Stat_Condition2=Stat_054_Remote,
+                                     Patient_ID="Patient_054")
+
+DMA_ISCHEMIAvREMOTE_093 <- DMA(Log2FC_Condition1=Mean_093_Ischaemic, 
+                                     Log2FC_Condition2=Mean_093_Remote, 
+                                     Stat_Condition1=Stat_093_Ischaemic, 
+                                     Stat_Condition2=Stat_093_Remote,
+                                     Patient_ID="Patient_093")
+
+DMA_ISCHEMIAvREMOTE_039 <- DMA(Log2FC_Condition1=Mean_039_Ischaemic, 
+                                     Log2FC_Condition2=Mean_039_Remote, 
+                                     Stat_Condition1=Stat_039_Ischaemic, 
+                                     Stat_Condition2=Stat_039_Remote,
+                                     Patient_ID="Patient_039")
+
+DMA_ISCHEMIAvREMOTE_064 <- DMA(Log2FC_Condition1=Mean_064_Ischaemic, 
+                                     Log2FC_Condition2=Mean_064_Remote, 
+                                     Stat_Condition1=Stat_064_Ischaemic, 
+                                     Stat_Condition2=Stat_064_Remote,
+                                     Patient_ID="Patient_064")
+
+DMA_ISCHEMIAvREMOTE_101 <- DMA(Log2FC_Condition1=Mean_101_Ischaemic, 
+                                     Log2FC_Condition2=Mean_101_Remote, 
+                                     Stat_Condition1=Stat_101_Ischaemic, 
+                                     Stat_Condition2=Stat_101_Remote,
+                                     Patient_ID="Patient_101")
+
+DMA_ISCHEMIAvREMOTE_103 <- DMA(Log2FC_Condition1=Mean_103_Ischaemic, 
+                                     Log2FC_Condition2=Mean_103_Remote, 
+                                     Stat_Condition1=Stat_103_Ischaemic, 
+                                     Stat_Condition2=Stat_103_Remote,
+                                     Patient_ID="Patient_103")
+
+DMA_ISCHEMIAvREMOTE_075 <- DMA(Log2FC_Condition1=Mean_075_Ischaemic, 
+                                     Log2FC_Condition2=Mean_075_Remote, 
+                                     Stat_Condition1=Stat_075_Ischaemic, 
+                                     Stat_Condition2=Stat_075_Remote,
+                                     Patient_ID="Patient_075")
+
+DMA_ISCHEMIAvREMOTE_099 <- DMA(Log2FC_Condition1=Mean_099_Ischaemic, 
+                                     Log2FC_Condition2=Mean_099_Remote, 
+                                     Stat_Condition1=Stat_099_Ischaemic, 
+                                     Stat_Condition2=Stat_099_Remote,
+                                     Patient_ID="Patient_099")
+
+DMA_ISCHEMIAvREMOTE_054 <- DMA(Log2FC_Condition1=Mean_054_Ischaemic, 
+                                     Log2FC_Condition2=Mean_054_Remote, 
+                                     Stat_Condition1=Stat_054_Ischaemic, 
+                                     Stat_Condition2=Stat_054_Remote,
+                                     Patient_ID="Patient_054")
+
+DMA_ISCHEMIAvREMOTE_071 <- DMA(Log2FC_Condition1=Mean_071_Ischaemic, 
+                                     Log2FC_Condition2=Mean_071_Remote, 
+                                     Stat_Condition1=Stat_071_Ischaemic, 
+                                     Stat_Condition2=Stat_071_Remote,
+                                     Patient_ID="Patient_071")
+
+DMA_ISCHEMIAvREMOTE_073 <- DMA(Log2FC_Condition1=Mean_073_Ischaemic, 
+                                     Log2FC_Condition2=Mean_073_Remote, 
+                                     Stat_Condition1=Stat_073_Ischaemic, 
+                                     Stat_Condition2=Stat_073_Remote,
+                                     Patient_ID="Patient_073")
+
+DMA_ISCHEMIAvREMOTE_050 <- DMA(Log2FC_Condition1=Mean_050_Ischaemic, 
+                                     Log2FC_Condition2=Mean_050_Remote, 
+                                     Stat_Condition1=Stat_050_Ischaemic, 
+                                     Stat_Condition2=Stat_050_Remote,
+                                     Patient_ID="Patient_050")
+
+DMA_ISCHEMIAvREMOTE_090 <- DMA(Log2FC_Condition1=Mean_090_Ischaemic, 
+                                     Log2FC_Condition2=Mean_090_Remote, 
+                                     Stat_Condition1=Stat_090_Ischaemic, 
+                                     Stat_Condition2=Stat_090_Remote,
+                                     Patient_ID="Patient_090")
+
+DMA_ISCHEMIAvREMOTE_065 <- DMA(Log2FC_Condition1=Mean_065_Ischaemic, 
+                                     Log2FC_Condition2=Mean_065_Remote, 
+                                     Stat_Condition1=Stat_065_Ischaemic, 
+                                     Stat_Condition2=Stat_065_Remote,
+                                     Patient_ID="Patient_065")
+
+DMA_ISCHEMIAvREMOTE_085 <- DMA(Log2FC_Condition1=Mean_085_Ischaemic, 
+                                     Log2FC_Condition2=Mean_085_Remote, 
+                                     Stat_Condition1=Stat_085_Ischaemic, 
+                                     Stat_Condition2=Stat_085_Remote,
+                                     Patient_ID="Patient_085")
+
+DMA_ISCHEMIAvREMOTE_055 <- DMA(Log2FC_Condition1=Mean_055_Ischaemic, 
+                                     Log2FC_Condition2=Mean_055_Remote, 
+                                     Stat_Condition1=Stat_055_Ischaemic, 
+                                     Stat_Condition2=Stat_055_Remote,
+                                     Patient_ID="Patient_055")
+
+DMA_ISCHEMIAvREMOTE_038 <- DMA(Log2FC_Condition1=Mean_038_Ischaemic, 
+                                     Log2FC_Condition2=Mean_038_Remote, 
+                                     Stat_Condition1=Stat_038_Ischaemic, 
+                                     Stat_Condition2=Stat_038_Remote,
+                                     Patient_ID="Patient_038")
+
+DMA_ISCHEMIAvREMOTE_076 <- DMA(Log2FC_Condition1=Mean_076_Ischaemic, 
+                                     Log2FC_Condition2=Mean_076_Remote, 
+                                     Stat_Condition1=Stat_076_Ischaemic, 
+                                     Stat_Condition2=Stat_076_Remote,
+                                     Patient_ID="Patient_076")
+
+DMA_ISCHEMIAvREMOTE_045 <- DMA(Log2FC_Condition1=Mean_045_Ischaemic, 
+                                     Log2FC_Condition2=Mean_045_Remote, 
+                                     Stat_Condition1=Stat_045_Ischaemic, 
+                                     Stat_Condition2=Stat_045_Remote,
+                                     Patient_ID="Patient_045")
+
+DMA_ISCHEMIAvREMOTE_083 <- DMA(Log2FC_Condition1=Mean_083_Ischaemic, 
+                                     Log2FC_Condition2=Mean_083_Remote, 
+                                     Stat_Condition1=Stat_083_Ischaemic, 
+                                     Stat_Condition2=Stat_083_Remote,
+                                     Patient_ID="Patient_083")
+
+DMA_ISCHEMIAvREMOTE_100 <- DMA(Log2FC_Condition1=Mean_100_Ischaemic, 
+                                     Log2FC_Condition2=Mean_100_Remote, 
+                                     Stat_Condition1=Stat_100_Ischaemic, 
+                                     Stat_Condition2=Stat_100_Remote,
+                                     Patient_ID="Patient_100")
+
+DMA_ISCHEMIAvREMOTE_068 <- DMA(Log2FC_Condition1=Mean_068_Ischaemic, 
+                                     Log2FC_Condition2=Mean_068_Remote, 
+                                     Stat_Condition1=Stat_068_Ischaemic, 
+                                     Stat_Condition2=Stat_068_Remote,
+                                     Patient_ID="Patient_068")
+
+DMA_ISCHEMIAvREMOTE_091 <- DMA(Log2FC_Condition1=Mean_091_Ischaemic, 
+                                     Log2FC_Condition2=Mean_091_Remote, 
+                                     Stat_Condition1=Stat_091_Ischaemic, 
+                                     Stat_Condition2=Stat_091_Remote,
+                                     Patient_ID="Patient_091")
+
+DMA_ISCHEMIAvREMOTE_102 <- DMA(Log2FC_Condition1=Mean_102_Ischaemic, 
+                                     Log2FC_Condition2=Mean_102_Remote, 
+                                     Stat_Condition1=Stat_102_Ischaemic, 
+                                     Stat_Condition2=Stat_102_Remote,
+                                     Patient_ID="Patient_102")
+
+DMA_ISCHEMIAvREMOTE_043 <- DMA(Log2FC_Condition1=Mean_043_Ischaemic, 
+                                     Log2FC_Condition2=Mean_043_Remote, 
+                                     Stat_Condition1=Stat_043_Ischaemic, 
+                                     Stat_Condition2=Stat_043_Remote,
+                                     Patient_ID="Patient_043")
+
+#-----------------------
+## Sum all the results into one dataframe
+library(plyr)
+DMA_ISCHEMIAvREMOTE <- join_all(list(DMA_ISCHEMIAvREMOTE_120, 
+                                     DMA_ISCHEMIAvREMOTE_089,
+                                     DMA_ISCHEMIAvREMOTE_094,
+                                     DMA_ISCHEMIAvREMOTE_080,
+                                     DMA_ISCHEMIAvREMOTE_088,
+                                     DMA_ISCHEMIAvREMOTE_054,
+                                     DMA_ISCHEMIAvREMOTE_093,
+                                     DMA_ISCHEMIAvREMOTE_039,
+                                     DMA_ISCHEMIAvREMOTE_064,
+                                     DMA_ISCHEMIAvREMOTE_101,
+                                     DMA_ISCHEMIAvREMOTE_103,
+                                     DMA_ISCHEMIAvREMOTE_075,
+                                     DMA_ISCHEMIAvREMOTE_099,
+                                     DMA_ISCHEMIAvREMOTE_071,
+                                     DMA_ISCHEMIAvREMOTE_073,
+                                     DMA_ISCHEMIAvREMOTE_050,
+                                     DMA_ISCHEMIAvREMOTE_090,
+                                     DMA_ISCHEMIAvREMOTE_065,
+                                     DMA_ISCHEMIAvREMOTE_085,
+                                     DMA_ISCHEMIAvREMOTE_055,
+                                     DMA_ISCHEMIAvREMOTE_038,
+                                     DMA_ISCHEMIAvREMOTE_076,
+                                     DMA_ISCHEMIAvREMOTE_045,
+                                     DMA_ISCHEMIAvREMOTE_083,
+                                     DMA_ISCHEMIAvREMOTE_100,
+                                     DMA_ISCHEMIAvREMOTE_068,
+                                     DMA_ISCHEMIAvREMOTE_091,
+                                     DMA_ISCHEMIAvREMOTE_102,
+                                     DMA_ISCHEMIAvREMOTE_043), 
+                                by = 'Metabolite', 
+                                type = 'full')
+write.csv(DMA_ISCHEMIAvREMOTE, "OutputData_AMBITION-Metabolomics/Sheet4_DMA_ISCHEMIAvREMOTE.csv")
+
+#Needed for CorrelationPlot:
+DMA_ISCHEMIAvREMOTE_Log2FC <- join_all(list(DMA_ISCHEMIAvREMOTE_120[,1:2], 
+                                     DMA_ISCHEMIAvREMOTE_089[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_094[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_080[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_088[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_054[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_093[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_039[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_064[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_101[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_103[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_075[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_099[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_071[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_073[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_050[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_090[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_065[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_085[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_055[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_038[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_076[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_045[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_083[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_100[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_068[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_091[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_102[,1:2],
+                                     DMA_ISCHEMIAvREMOTE_043[,1:2]), 
+                                by = 'Metabolite', 
+                                type = 'full')
+detach(package:plyr)#We need to detach this package cause it will mask dyplr!
+```
+
+## Sheet 5: DMA impaired LVEF versus preserved LVEF
+Here we use the mean values of the analytical replicates and we can define the two samples we have for some patients (ischemia and remote) as two biological replicates. We have a total of 61 samples, of which 3 are from patients with only one biological replicate (036_Remote, 081_Ischaemic, 040_Ischaemic), whilst 58 samples are from 29 patients where always a sample of an ischemic area and from an remote area has been taken.\
+Of all those samples we have 10 samples that have impaired LVEF and 51 with preserved LVEF. This is a quite unequal amount of samples we are comparing here, which we definitely have to keep in mind.\
+Here we use the Mann-Whitney-Wilcoxon Test and p-value adjustment using Benjamini Hochberg.
+```{r, warning= FALSE, message=FALSE}
+# Prepare the Dataframes:
+Data_DMA_2 <- H_Means%>%#remove the outliers!
+  unite("Sample",c("Patient.ID","class"),sep="_", remove=FALSE)
+
+#--------------------
+##Single replicates for STAT:
+MPR_impairedLVEF <- subset(Data_DMA_2, Impaired.LVEF == "TRUE", select=c(7:249))
+MPR_preservedLVEF <- subset(Data_DMA_2, Impaired.LVEF == "FALSE", select=c(7:249))
+
+#---------------------
+## Mean of the replicates:
+Data_DMA_Means_2 <- (Data_DMA_2[,7:249]) %>%
+  group_by(Data_DMA_2$Impaired.LVEF) %>%
+  summarise_all(funs(mean))%>%
+  rename("Impaired.LVEF"="Data_DMA_2$Impaired.LVEF")
+
+Mean_MPR_impairedLVEF <- subset(Data_DMA_Means_2, Impaired.LVEF == "TRUE", select=c(2:244))
+Mean_MPR_preservedLVEF <- subset(Data_DMA_Means_2, Impaired.LVEF == "FALSE", select=c(2:244))
+
+#---------------------
+## Apply function:
+DMA_Impairedvspreserved_LVEF <- DMA_Single(STAT_pval =wilcox.test,
+                                     STAT_padj = "BH",
+                                     Log2FC_Condition1=Mean_MPR_impairedLVEF, 
+                                     Log2FC_Condition2=Mean_MPR_preservedLVEF, 
+                                     Stat_Condition1=MPR_impairedLVEF, 
+                                     Stat_Condition2=MPR_preservedLVEF,
+                                     Output="DMA_Impairedvspreserved_LVEF.csv")
+
+#---------------------
+## Add the metabolic pathways:
+Template_Pathways <- read.csv("InputData_AMBITION-Metabolomics/Template_MetabolicPathways.csv")
+DMA_Impairedvspreserved_LVEF <- merge(x=DMA_Impairedvspreserved_LVEF, y=Template_Pathways, by="Metabolite", all.x=TRUE)
+write.csv(DMA_Impairedvspreserved_LVEF, "OutputData_AMBITION-Metabolomics/Sheet5_DMA_Impairedvspreserved_LVEF_Pathways.csv")
+```
+
+# Figures:
+## PCA plot
+PCA plot of ischemia and remote to show that the samples do not cluster apart (symbol = ischemia or remote and colour=patients). Here we include all the patients that do have an ischemia and/or an remote samples.
+```{r, message=FALSE, warning=FALSE}
+#Remove outliers (also the corresponding ischemia sample):
+PCA_Plot <- subset(norm_outliers,Excluded == "NO")%>%#remove the outliers!
+  unite("Sample",c("Patient.ID","class"),sep="_", remove=FALSE)
+
+#Remove patients where we do not have information about the region (Ischemic or remote):
+PCA_Plot <- subset(PCA_Plot,class == "Ischaemic" |class == "Remote")
+row.names(PCA_Plot) <- PCA_Plot$UniqueID
+
+#------------------------
+#PLOT
+PCA_Data_m<- PCA_Plot[,10:252]
+PCA_Data_m <- apply(as.matrix(PCA_Data_m), 2, as.numeric)
+row.names(PCA_Data_m) <- PCA_Plot$UniqueID
+
+PCA_NoLoadings(InputMatrix= PCA_Data_m, OutputPlotName= "Patients_IschemicVSremote",DF=PCA_Plot, Color = "Patient.ID", Shape = "class")
+```
+
+## Correlation plot
+Differential metabolite analysis of each individual patient using the analytical replicates for the statistics. This is a paired analysis given that the differential metabolite analysis always compares the ischemic sample of a patients to its remote counterpart. The result is summarised in the correlation plot showing the Log2FC of each individual patient when comparing ischemic versus remote.\
+This is done in order to find patients with similar patterns in the metabolite fold change when comparing ischemia versus remote and the correlation matrix highlights the most correlated variables in our data table.\
+The correlation coefficients [%] are colored according to their values.\
+IMPORTANT to note: Here all metabolites are included and it has not been taken into consideration if the Log2FC was significant\
+```{r, message=FALSE, warning=FALSE}
+Correlation <- DMA_ISCHEMIAvREMOTE_Log2FC
+row.names(Correlation) <- Correlation$Metabolite
+Correlation_Matrix <- as.matrix(Correlation[,2:30])
+
+#--------------------------
+Correlation_Result <- cor(Correlation_Matrix)
+
+library(corrplot)#correlation matrix
+library(RColorBrewer)
+
+pdf(file="Figures_AMBITION-Metabolomics/CorrelationPlot_IschemiaVSremote_PatientsLog2FC.pdf", width=6, height=6)
+corrplot(Correlation_Result,
+         tl.cex = 0.6,# tl = text labels of samples
+         tl.col = "black",
+         method = "color", #colour of the bar
+         cl.lim = c(-1, 1), #range of correlations
+         col = brewer.pal(n = 10, name = 'BrBG'),
+         addCoef.col ="white",
+         addCoefasPercent = TRUE,
+         number.cex=0.5,#number= the coefficient
+         is.corr=TRUE,
+         #outline="gray20",#outline around the square/circle
+         order="hclust",#"hclust" for the hierarchical clustering order
+         hclust.method="complete",
+         main="Patients Log2FC(Ischemia versus Remote) ",
+         cex.main=1
+         #addrect=5
+         )
+dev.off()
+
+corrplot(Correlation_Result,
+         tl.cex = 0.6,# tl = text labels of samples
+         tl.col = "black",
+         method = "color", #colour of the bar
+         cl.lim = c(-1, 1), #range of correlations
+         col = brewer.pal(n = 10, name = 'BrBG'),
+         addCoef.col ="white",
+         addCoefasPercent = TRUE,
+         number.cex=0.5,#number= the coefficient
+         is.corr=TRUE,
+         #outline="gray20",#outline around the square/circle
+         order="hclust",#"hclust" for the hierarchical clustering order
+         hclust.method="complete",
+         main="Patients Log2FC(Ischemia versus Remote) ",
+         cex.main=1
+         #addrect=5
+         )
+```
+
+
+## Volcano Plot 
+Here we plot the results of the differential metabolite analysis comparing impaired versus preserved LVEF. Additionally, we colour code for the manually assigned (based on a priori knowledge) metabolic pathways.
+```{r, message=FALSE, warning=FALSE}
+#Plot
+VolcanoPlot_Pathways(DMA_Impairedvspreserved_LVEF, "Impairedvspreserved_LVEF")
+```
+
+## Violin plots
+Here we plot the individual metabolite changes as violin plots. This is done using "Sheet 3: Mean of analytical replicates".\
+### 1. Ischemia versus remote
+
+```{r, message=FALSE, warning=FALSE}
+# In order to be able to do a paired wilcox.test, we need to remove the patients that only have one sample:
+H_Means_paired <- H_Means[-c(1, 6,33),] #Remove Patient 036, 040, 081
+colnames(H_Means_paired) <- (gsub("/"," ",colnames(H_Means_paired)))#remove "/" cause this can not be safed in a PDF name
+colnames(H_Means_paired) <- (gsub(":",".",colnames(H_Means_paired)))#remove ":" cause this can not be safed in a PDF name
+
+
+# Make a list of metabolites we want to plot:
+Metabolite_Names <- t(H_Means_paired[,7:249])
+Metabolite_Names <- rownames(Metabolite_Names)
+
+#Make the plots
+library(ggbeeswarm)
+library(ggpubr)
+
+for (i in Metabolite_Names){ 
+ViolinePlot <- ggplot(H_Means_paired, aes(x=class, y=assign(i, get(i)) ,color=factor(Patient.ID))) +
+  geom_violin(trim=FALSE, color="black", fill="gray88")+
+  stat_compare_means(data=H_Means_paired,comparisons = list(c("Ischaemic", "Remote")), method="wilcox.test", paired=TRUE) +
+  geom_beeswarm(cex=4)+
+  theme_classic()+
+  labs(y = paste("Peak Area of", i, "(abitrary unit)"), x = "")
+ViolinePlot$labels$colour <- "Patient ID"
+ggsave(file=paste("Figures_AMBITION-Metabolomics/ViolinePlots_Ischemia-vs-Remote/ViolinePlot_IscheamiaVSRemote", i, ".pdf", sep="_"), plot=ViolinePlot, width=8, height=6)
+  plot(ViolinePlot)
+}
+```
+
+### 2. Impaired LVEF versus preserved LVEF
+```{r, message=FALSE, warning=FALSE}
+#Load the DF
+H_Means_LVEF <- H_Means%>%
+  mutate(Impaired_LVEF_Label = case_when(Impaired.LVEF == TRUE ~ 'Impaired LVEF',
+                                         Impaired.LVEF == FALSE ~ 'Preserved LVEF',
+                                         TRUE ~ 'Exclude'))
+H_Means_LVEF <-H_Means_LVEF[,c(1:4,250,5:249)]
+colnames(H_Means_LVEF) <- (gsub("/"," ",colnames(H_Means_LVEF)))#remove "/" cause this can not be safed in a PDF name
+colnames(H_Means_LVEF) <- (gsub(":",".",colnames(H_Means_LVEF)))#remove ":" cause this can not be safed in a PDF name
+
+# Make a list of metabolites we want to plot:
+Metabolite_Names <- t(H_Means_LVEF[,8:250])
+Metabolite_Names <- rownames(Metabolite_Names)
+
+#Make the plots
+for (i in Metabolite_Names){ 
+ViolinePlot1 <- ggplot(H_Means_LVEF, aes(x=Impaired_LVEF_Label, y=assign(i, get(i)) ,color=factor(Impaired_LVEF_Label))) +
+  geom_violin(trim=FALSE, color="black", fill="gray88")+
+  stat_compare_means(data=H_Means_LVEF,comparisons = list(c("Impaired LVEF", "Preserved LVEF")), method="wilcox.test", paired=FALSE) +
+  geom_beeswarm(cex=4)+
+  theme_classic()+
+  labs(y = paste("Peak Area of", i, "(abitrary unit)"), x = "")
+ViolinePlot1$labels$colour <- "LVEF status"
+ggsave(file=paste("Figures_AMBITION-Metabolomics/ViolinPlots_Impaired-vs-Preserved_LVEF/ViolinePlot_ImpairedVPreserved_LVEF", i, ".pdf", sep="_"), plot=ViolinePlot1, width=8, height=6)
+  plot(ViolinePlot1)
+}
+```
+
+# Information about package used and versions 
+For reproducibility:
+```{r}
+sessionInfo()
+```
