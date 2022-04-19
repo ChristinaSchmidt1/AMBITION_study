@@ -1,5 +1,5 @@
 # The `AMBITION` study
-# `A`ssessing `M`itochondrial `BI`oenergetics in chronic coronary artery disease: A `T`ranslational study `I`ntegrating multi`O`mic analysis of human left ventricular tissue and qua`N`titative stress perfusion cardiovascular magnetic resonance
+# `A`ssessing `M`itochondrial `BI`oenergetics in stable coronary artery disease: A `T`ranslational study `I`ntegrating multi`O`mic analysis of human left ventricular tissue and qua`N`titative stress perfusion cardiovascular magnetic resonance
 
 The notebook contains:
 Metabolomics data of patients myocardial biopsies that were analysed by liquid chromatography-mass spectrometry (LC-MS).
